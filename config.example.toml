@@ -1,0 +1,12 @@
+# where the ingestion endpoint listens
+listen_api = 8765
+
+# where the ui listens
+listen_ui  = 8080
+
+# the random value used to seed the unique visitor hashes
+# leave empty to generate on first run.
+random_salt_seed = ""
+
+# path to the sqlite DB, will be created if it doesn't exist
+database_path = "hindsight.db"
