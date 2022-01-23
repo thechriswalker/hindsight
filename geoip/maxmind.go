@@ -10,6 +10,23 @@ import (
 	_ "embed"
 )
 
+var defaultLocator Geolocater = &MaxMind{}
+
+func Geolocate(ip net.IP) (*LookupResult, error) {
+	return defaultLocator.Geolocate(ip)
+}
+
+func MustGeolocate(ip net.IP) *LookupResult {
+	r, err := Geolocate(ip)
+	if err != nil {
+		return &LookupResult{
+			CountryCode: "__",
+			Timezone:    "Etc/UTC",
+		}
+	}
+	return r
+}
+
 type MaxMind struct{}
 
 type mmResult struct {

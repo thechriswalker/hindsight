@@ -52,7 +52,7 @@ func NewSQLiteStorage(dsn string) (*SQLiteStorage, error) {
 	db.Exec(`CREATE TABLE IF NOT EXISTS hindsight_schema (version INTEGER NOT NULL, time NUMERIC NOT NULL);`)
 	// check schema version
 	var schemaVersion int
-	err = db.QueryRow(`SELECT MAX(version) FROM hindsight_schema;`).Scan(&schemaVersion)
+	err = db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM hindsight_schema;`).Scan(&schemaVersion)
 	if err != nil {
 		return nil, fmt.Errorf("could not read initial schema version: %w", err)
 	}
@@ -71,7 +71,7 @@ func NewSQLiteStorage(dsn string) (*SQLiteStorage, error) {
 	return &SQLiteStorage{db: db}, nil
 }
 
-func (s *SQLiteStorage) Store(evts []*Event) error {
+func (s *SQLiteStorage) Store(evts ...*Event) error {
 	// bulk insert is tricky, but SQLite is quick with single inserts.
 	for i, ev := range evts {
 		_, err := s.db.Exec(`INSERT INTO hindsight_events (
