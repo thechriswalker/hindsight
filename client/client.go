@@ -2,11 +2,9 @@ package client
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"runtime"
 	"strings"
 	"time"
 
@@ -18,30 +16,18 @@ const (
 	HindsightEventVersion = "1.0"
 )
 
-var userAgent string
-
-func init() {
-	// build useragent
-	userAgent = fmt.Sprintf(
-		"Hindsight-Go-Client/%s Go/%s",
-		ClientVersion,
-		runtime.Version(),
-	)
-}
-
 type Client struct {
 	endpoint   string
-	token      string
 	trustProxy bool
 	onError    func(err error)
-	httpClient *http.Client
+	serializer chan *Event
 }
 
 type Option func(c *Client)
 
-func WithHTTPClient(client *http.Client) Option {
+func WithEndpoint(addr string) Option {
 	return func(c *Client) {
-		c.httpClient = client
+		c.endpoint = addr
 	}
 }
 
@@ -54,23 +40,6 @@ func WithErrorHandler(fn func(err error)) Option {
 func WithTrustProxy(trust bool) Option {
 	return func(c *Client) {
 		c.trustProxy = trust
-	}
-}
-
-func WithEndpoint(url string) Option {
-	return func(c *Client) {
-		c.endpoint = url
-	}
-}
-
-func WithApiToken(token string) Option {
-	return func(c *Client) {
-		if token == "" {
-			c.token = ""
-		} else {
-			// pre-create the authorisation header
-			c.token = "Bearer " + token
-		}
 	}
 }
 
@@ -116,122 +85,127 @@ func (ev *Event) HookWrite(w io.Writer, p []byte) (n int, err error) {
 	return
 }
 
-func Middleware(c *Client) func(http.Handler) http.Handler {
-	getRemoteIP := func(r *http.Request) string {
-		h, _, _ := net.SplitHostPort(r.RemoteAddr)
-		if c.trustProxy {
-			// read xff header
-			xff := strings.Split(r.Header.Get("x-forwarded-for"), ",")
-			if len(xff) > 0 {
-				h = strings.TrimSpace(xff[0])
-			}
+func getRemoteIP(r *http.Request, trustProxy bool) string {
+	h, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if trustProxy {
+		// read xff header
+		xff := strings.Split(r.Header.Get("x-forwarded-for"), ",")
+		if len(xff) > 0 {
+			h = strings.TrimSpace(xff[0])
 		}
-		ip := net.ParseIP(h)
-		if ip != nil {
-			return ip.String()
-		}
-		return "0.0.0.0"
 	}
+	ip := net.ParseIP(h)
+	if ip != nil {
+		return ip.String()
+	}
+	return "0.0.0.0"
+}
+
+func (ev *Event) Finished() {
+	ev.Duration = time.Since(ev.Time)
+}
+
+func Middleware(c *Client) func(http.Handler) http.Handler {
 	return func(h http.Handler) http.Handler {
 		// get context, mark start time, add "done" handler to submit event
 		return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-			start := time.Now()
-			ev := &Event{
-				Time:      start,
-				IP:        getRemoteIP(req),
-				Host:      req.Host,
-				Method:    req.Method,
-				Path:      req.URL.RequestURI(),
-				UserAgent: req.Header.Get("User-Agent"),
-				// the status and byteswritten are written by the hooks
-			}
-			// need to wrap the response writer for the "set header"
-			// call..
-			h.ServeHTTP(httpsyhook.Wrap(rw, ev), req)
-			ev.Duration = time.Since(start)
+			wrapped, ev := c.Wrap(rw, req)
+			h.ServeHTTP(wrapped, req)
+			ev.Finished()
 			// now we must send it to be recorded.
 			// we can do this async.
 			go c.Record(ev)
+
 		})
 	}
+}
 
+func SetRequestValues(req *http.Request, ev *Event, trustProxy bool) {
+	ev.IP = getRemoteIP(req, trustProxy)
+	ev.Host = req.Host
+	ev.Method = req.Method
+	ev.Path = req.URL.RequestURI()
+	ev.UserAgent = req.Header.Get("User-Agent")
+}
+
+func (c *Client) Wrap(rw http.ResponseWriter, req *http.Request) (http.ResponseWriter, *Event) {
+	ev := &Event{Time: time.Now()}
+	SetRequestValues(req, ev, c.trustProxy)
+	return httpsyhook.Wrap(rw, ev), ev
+}
+
+type NetJsonEncoder struct {
+	endpoint string
+	conn     net.Conn
+	enc      *json.Encoder
+}
+
+func (nj *NetJsonEncoder) connect() (err error) {
+	if nj.conn != nil {
+		nj.conn.Close()
+		nj.conn = nil
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		nj.conn, err = net.DialTimeout("tcp", nj.endpoint, 100*time.Millisecond)
+		if err == nil {
+			nj.enc = json.NewEncoder(nj.conn)
+			return nil
+		}
+	}
+	return err
+}
+
+func (nj *NetJsonEncoder) Encode(v interface{}) error {
+	if nj.conn == nil {
+		if err := nj.connect(); err != nil {
+			return err
+		}
+	}
+	// should not take long
+	deadline := 5 * time.Millisecond
+	for {
+		nj.conn.SetWriteDeadline(time.Now().Add(deadline))
+		if err := nj.enc.Encode(v); err != nil {
+			// error writing.
+			if _, ok := err.(*json.MarshalerError); ok {
+				// marshaling error, reconnecting is not going to fix that...
+				return err
+			}
+			// not a marshaling error, likely a "write" error, we should
+			// kill the connection and try again.
+			if err = nj.connect(); err != nil {
+				return err
+			}
+		} else {
+			// success
+			return nil
+		}
+	}
 }
 
 func NewClient(opts ...Option) *Client {
 	c := &Client{
-		httpClient: http.DefaultClient,
+		endpoint: "127.0.0.1:8765",
+		onError:  func(err error) {},
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
+	c.serializer = make(chan *Event)
+	go func() {
+		nje := &NetJsonEncoder{endpoint: c.endpoint}
+		for ev := range c.serializer {
+			err := nje.Encode(ev)
+			if err != nil {
+				c.onError(err)
+			}
+		}
+	}()
 	return c
 }
 
 func (c *Client) Record(evts ...*Event) {
-	sendEvents(c, evts)
-}
-
-func sendEvents(c *Client, evts []*Event) {
-	if len(evts) == 0 {
-		return
+	for _, ev := range evts {
+		c.serializer <- ev
 	}
-	// create a pipe, so we can give the read end to
-	// the http request, and write the payloads into
-	// the write end
-	r, w := io.Pipe()
-	// we need to start the request AND then serialise the payloads...
-	// so we spawn a goroutine to do the encoding
-	go func() {
-		enc := json.NewEncoder(w)
-		for _, ev := range evts {
-			// write the line, discard errors here.
-			_ = enc.Encode(ev)
-			// add a newline
-			n, _ := w.Write([]byte{'\n'})
-			if n != 1 {
-				// just bail
-				return
-			}
-		}
-		w.Close()
-	}()
-	req, err := http.NewRequest("POST", c.endpoint, r)
-	// set the user-agent and headers
-	req.Header.Set("user-agent", userAgent)
-	if len(evts) == 1 {
-		req.Header.Set("content-type", "application/json")
-	} else {
-		req.Header.Set("content-type", "application/x-ndjson")
-	}
-	if c.token != "" {
-		req.Header.Set("authorisation", c.token)
-	}
-
-	if err != nil {
-		c.onError(fmt.Errorf("hindsight-sendEvent fail: %w", err))
-		return
-	}
-
-	res, err := c.httpClient.Do(req)
-	if err != nil {
-		c.onError(fmt.Errorf("hindsight-sendEvent fail: %w", err))
-		return
-	}
-	if res.StatusCode == http.StatusNoContent {
-		// this is what we expect
-		res.Body.Close()
-		return
-	}
-	// otherwise we should error
-	// probably we should read the body, as it will have info.
-	// let's read at most 1k from the body, that should be enough for
-	// and error message.
-	body, err := io.ReadAll(io.LimitReader(res.Body, 1024))
-	if err != nil {
-		// @TODO...
-		c.onError(fmt.Errorf("hindsight-sendEvent err: api response status %d", res.StatusCode))
-		return
-	}
-	// assume the body is utf8
-	c.onError(fmt.Errorf("hindsight-sendEvent err: api response(%d): %s", res.StatusCode, string(body)))
 }

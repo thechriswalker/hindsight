@@ -1,8 +1,7 @@
 package main
 
 import (
-	"fmt"
-	"net/http"
+	"context"
 
 	"github.com/0x6377/hindsight"
 )
@@ -12,7 +11,7 @@ func run(c *hindsight.Config) error {
 	if err != nil {
 		return err
 	}
-	mux := hindsight.CreateAPIHandler(c, storage)
+	ctx := context.Background()
 
-	return http.ListenAndServe(fmt.Sprintf(":%d", c.ListenAPI), mux)
+	return hindsight.ListenForIngestion(ctx, c, storage)
 }

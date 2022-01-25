@@ -50,7 +50,7 @@ func main() {
 				}))
 			}
 			if debug {
-				zerolog.SetGlobalLevel(zerolog.DebugLevel)
+				zerolog.SetGlobalLevel(zerolog.TraceLevel)
 			} else {
 				zerolog.SetGlobalLevel(zerolog.InfoLevel)
 			}

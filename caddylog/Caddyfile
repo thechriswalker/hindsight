@@ -1,0 +1,14 @@
+
+http://localhost:2015
+
+log {
+    output net "127.0.0.1:8765"
+    format hindsight
+}
+
+handle_errors {
+    respond "{http.error.status_code} {http.error.status_text}"
+}
+
+
+file_server

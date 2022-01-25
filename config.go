@@ -11,19 +11,19 @@ import (
 )
 
 type Config struct {
-	ListenAPI      int    // port for API - should not be public
-	ListenUI       int    // port for UI - could be exposed to internet
-	DatabasePath   string // path to DB
-	RandomSaltSeed string // A random string to use to generate the daily hashes
+	ListenIngestion string // host:port for API - should not be public
+	ListenUI        string // host:port for UI - could be exposed to internet
+	DatabasePath    string // path to DB
+	RandomSaltSeed  string // A random string to use to generate the daily hashes
 }
 
 func LoadConfig(filename string) (*Config, error) {
 	// set defaults
 	c := &Config{
-		ListenAPI:      8765,
-		ListenUI:       8080,
-		DatabasePath:   "hindsight.db",
-		RandomSaltSeed: "", // leave this empty until after toml unmarshalling
+		ListenIngestion: "127.0.0.1:8765",
+		ListenUI:        "127.0.0.1:8080",
+		DatabasePath:    "hindsight.db",
+		RandomSaltSeed:  "", // leave this empty until after toml unmarshalling
 	}
 	_, err := toml.DecodeFile(filename, c)
 	if err != nil {

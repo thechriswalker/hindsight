@@ -26,7 +26,7 @@ func (in *InboundEvent) UnmarshalJSON(b []byte) error {
 	// make a map[string]interface{} and then be more specific
 	// with the keys. this way we can ensure all fields are present
 	// and cased correctly.
-	m := make(map[string]interface{}, 9)
+	m := make(map[string]interface{}, 10)
 	// We actually want to use the "decoder" so we can "useNumber" to get big numbers.
 
 	dec := json.NewDecoder(bytes.NewReader(b))
@@ -36,9 +36,17 @@ func (in *InboundEvent) UnmarshalJSON(b []byte) error {
 	if err != nil {
 		return err // plain bad JSON
 	}
-	// We should have 9 fields
-	if len(m) > 9 {
+	// We should have 10 fields
+	if len(m) > 10 {
 		return fmt.Errorf("event has unexpected fields")
+	}
+	if err := unmarshalStringField(m, "Hindsight", func(s string) error {
+		if s != "1.0" {
+			return fmt.Errorf("unknown version for Hindsight: %s", s)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	// now for each field.
 	// Time should be an RFC3339 string
@@ -95,8 +103,9 @@ func (in *InboundEvent) UnmarshalJSON(b []byte) error {
 	}
 	// StatusCode
 	if err := unmarshalIntField(m, "StatusCode", func(n int64) error {
-		if n < 100 || n >= 600 {
-			return fmt.Errorf("event 'StatusCode' should be between 100 and 599")
+		// we will allow 0 for "unknown".
+		if (n < 100 || n >= 600) && n != 0 {
+			return fmt.Errorf("event 'StatusCode' should be between 100 and 599 (or 0)")
 		}
 		in.StatusCode = n
 		return nil
@@ -114,7 +123,7 @@ func (in *InboundEvent) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	// Duration (in millisecnds)
-	if err := unmarshalIntField(m, "Duration", func(n int64) error {
+	if err := unmarshalIntField(m, "DurationMS", func(n int64) error {
 		if n < 0 {
 			return fmt.Errorf("event 'BytesWritten' should be non-negative")
 		}

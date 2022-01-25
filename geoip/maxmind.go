@@ -12,6 +12,11 @@ import (
 
 var defaultLocator Geolocater = &MaxMind{}
 
+const (
+	defaultCountryCode = "XX" // user-assigned code element
+	defaultTimezone    = "Etc/UTC"
+)
+
 func Geolocate(ip net.IP) (*LookupResult, error) {
 	return defaultLocator.Geolocate(ip)
 }
@@ -20,9 +25,15 @@ func MustGeolocate(ip net.IP) *LookupResult {
 	r, err := Geolocate(ip)
 	if err != nil {
 		return &LookupResult{
-			CountryCode: "__",
-			Timezone:    "Etc/UTC",
+			CountryCode: defaultCountryCode,
+			Timezone:    defaultTimezone,
 		}
+	}
+	if r.CountryCode == "" {
+		r.CountryCode = defaultCountryCode
+	}
+	if r.Timezone == "" {
+		r.Timezone = defaultTimezone
 	}
 	return r
 }
